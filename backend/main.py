@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 
+from admin_diagnostics import gateway_metadata
 from auth import new_token, password_hash, token_hash, verify_password
 from body_limit import BodyLimitMiddleware
 from config import Settings
@@ -202,6 +203,17 @@ def create_app(settings: Settings | None = None, storage=None, store=None):
     async def privacy_headers(request, call_next):
         request.state.request_id = uuid4().hex
         start = time.monotonic()
+        if request.url.path.startswith("/api/admin/"):
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "admin_asgi_received",
+                        **gateway_metadata(request.scope.get("aws.event", {})),
+                        "request_id": request.state.request_id,
+                        "authorization_present": "authorization" in request.headers,
+                    }
+                )
+            )
         response = await call_next(request)
         response.headers.update(
             {
@@ -219,6 +231,9 @@ def create_app(settings: Settings | None = None, storage=None, store=None):
                     "path": getattr(route, "path", "unmatched"),
                     "status": response.status_code,
                     "latency_ms": round((time.monotonic() - start) * 1000),
+                    "gateway_request_id": request.scope.get("aws.event", {})
+                    .get("requestContext", {})
+                    .get("requestId"),
                 }
             )
         )
@@ -568,33 +583,82 @@ def create_app(settings: Settings | None = None, storage=None, store=None):
 
     bearer = HTTPBearer(auto_error=False)
 
-    def administrator(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]):
+    def admin_trace(request, stage, **fields):
+        logger.info(
+            json.dumps(
+                {
+                    "event": "admin_auth_trace",
+                    "stage": stage,
+                    "request_id": request.state.request_id,
+                    "gateway_request_id": request.scope.get("aws.event", {})
+                    .get("requestContext", {})
+                    .get("requestId"),
+                    **fields,
+                }
+            )
+        )
+
+    def administrator(
+        request: Request,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    ):
+        admin_trace(request, "bearer_parsed", credentials_present=credentials is not None)
         row = (
             store.get("admin_sessions", {"token_hash": token_hash(credentials.credentials)})
             if credentials
             else None
         )
-        if not row or datetime.fromisoformat(row["expires_at"]) <= now():
+        if credentials:
+            admin_trace(request, "session_read", session_found=row is not None)
+        reason = (
+            "credentials_missing_or_invalid"
+            if not credentials
+            else "session_not_found"
+            if not row
+            else "session_expired"
+            if datetime.fromisoformat(row["expires_at"]) <= now()
+            else None
+        )
+        if reason:
+            # Log only failure categories and correlation IDs, never headers or tokens.
+            gateway = request.scope.get("aws.event", {}).get("requestContext", {})
+            logger.warning(
+                json.dumps(
+                    {
+                        "event": "admin_auth_failed",
+                        "reason": reason,
+                        "authorization_present": "authorization" in request.headers,
+                        "request_id": request.state.request_id,
+                        "gateway_request_id": gateway.get("requestId"),
+                    }
+                )
+            )
             raise APIError(401, "UNAUTHORIZED", "유효한 관리자 세션이 필요합니다.")
+        admin_trace(request, "session_authorized")
         return row
 
     @app.post("/api/admin/login")
-    def login(payload: LoginInput):
+    def login(payload: LoginInput, request: Request):
         # Retry optimistic conflicts so concurrent failures are all counted.
         for _ in range(10):
             admin = store.get("admins", {"username": payload.username})
+            admin_trace(request, "account_read", account_found=admin is not None)
             if admin and int(admin.get("locked_until", 0)) > int(now().timestamp()):
+                admin_trace(request, "account_locked")
                 raise APIError(423, "ACCOUNT_LOCKED", "계정이 잠겼습니다. 15분 후 다시 시도하세요.")
             stored = admin["password_hash"] if admin else password_hash("dummy-password")
             valid = verify_password(payload.password, stored) and admin is not None
+            admin_trace(request, "password_checked", valid=valid)
             if admin:
                 try:
                     locked = store.login_update(admin, valid)
                 except APIError as exc:
                     if exc.code == "STATE_CONFLICT":
+                        admin_trace(request, "account_update_conflict")
                         continue
                     raise
                 if locked:
+                    admin_trace(request, "account_locked")
                     raise APIError(
                         423, "ACCOUNT_LOCKED", "계정이 잠겼습니다. 15분 후 다시 시도하세요."
                     )
@@ -602,6 +666,7 @@ def create_app(settings: Settings | None = None, storage=None, store=None):
                 raise APIError(401, "UNAUTHORIZED", "아이디 또는 비밀번호를 확인하세요.")
             token, hashed = new_token()
             deadline = now() + timedelta(seconds=settings.admin_session_ttl_sec)
+            admin_trace(request, "session_write_started")
             store.put(
                 "admin_sessions",
                 {
@@ -612,14 +677,16 @@ def create_app(settings: Settings | None = None, storage=None, store=None):
                     "ttl": int(deadline.timestamp()),
                 },
             )
+            admin_trace(request, "session_saved", expires_at=deadline.isoformat())
             return {"token": token, "expires_at": deadline.isoformat()}
         raise APIError(429, "RATE_LIMITED", "잠시 후 다시 시도하세요.")
 
     admin_router = APIRouter(prefix="/api/admin", dependencies=[Depends(administrator)])
 
     @admin_router.post("/logout")
-    def logout(session: Annotated[dict, Depends(administrator)]):
+    def logout(request: Request, session: Annotated[dict, Depends(administrator)]):
         store.delete("admin_sessions", {"token_hash": session["token_hash"]})
+        admin_trace(request, "session_deleted")
         return {"ok": True}
 
     @admin_router.get("/stats")

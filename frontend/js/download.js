@@ -3,13 +3,15 @@
 // 주의: 서버는 /api/d/{id} 호출마다 다운로드 수를 올리므로, URL이 만료될 때만 다시 받는다.
 import { api, CONFIG, ApiError } from "./api.js";
 import { toast, fmtSize, showModeBadge } from "./ui.js";
+import { decryptBuffer, keyFromHash, OVERHEAD } from "./crypto.js";
 
 const $ = (id) => document.getElementById(id);
 const URL_TTL_MS = 4.5 * 60 * 1000; // Presigned GET 5분보다 약간 짧게
 
 const id = new URLSearchParams(location.search).get("id");
 // #k= 키는 HTTP 요청에 실리지 않는다 (F12 브라우저 복호화용)
-const key = new URLSearchParams(location.hash.slice(1)).get("k");
+const key = keyFromHash(location.hash);
+let encrypted = false;
 
 let fetchedAt = 0;
 let files = [];
@@ -24,11 +26,9 @@ async function load() {
     const res = await api.getDownload(id);
     fetchedAt = Date.now();
     files = res.files;
-    if (res.encrypted) {
-      // F12(선택) 미구현: 복호화 화면은 crypto.js가 들어오면 연결한다
-      return key
-        ? showError("암호화된 파일입니다", "이 버전에서는 아직 브라우저 복호화를 지원하지 않습니다.")
-        : showError("복호화 키가 없는 링크입니다", "QR 코드를 다시 스캔하세요. 링크 끝의 #k=… 부분이 필요합니다.");
+    encrypted = !!res.encrypted;
+    if (encrypted && !key) {
+      return showError("복호화 키가 없는 링크입니다", "QR 코드를 다시 스캔하세요. 링크 끝의 #k=… 부분이 필요합니다.");
     }
     render(res);
   } catch (e) {
@@ -52,7 +52,7 @@ function render(res) {
     name.textContent = f.name;
     const size = document.createElement("div");
     size.className = "muted";
-    size.textContent = fmtSize(f.size);
+    size.textContent = fmtSize(encrypted ? Math.max(0, f.size - OVERHEAD) : f.size); // 암호문의 IV·태그 28바이트 제외
     info.append(name, size);
     const btn = document.createElement("button");
     btn.type = "button";
@@ -79,14 +79,9 @@ async function download(index, btn) {
       toast("mock 모드에서는 1MB 이하 파일만 실제로 받을 수 있습니다.");
       return;
     }
+    if (encrypted) return saveDecrypted(url, files[index].name);
     // 원래 파일명은 S3 응답의 Content-Disposition이 붙인다
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = files[index].name; // 같은 출처(data:)일 때만 적용, S3는 Content-Disposition 사용
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    save(url, files[index].name);
   } catch (e) {
     const err = e instanceof ApiError ? e : new ApiError("INTERNAL_ERROR");
     if (err.code === "EXPIRED" || err.code === "NOT_FOUND") load();
@@ -94,6 +89,40 @@ async function download(index, btn) {
   } finally {
     btn.disabled = false;
   }
+}
+
+function save(href, name) {
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = name; // 같은 출처(data:·blob:)일 때만 적용, S3는 Content-Disposition 사용
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// 암호문을 S3에서 받아 브라우저에서 복호화한 뒤 원래 파일명으로 저장한다.
+// 키가 틀렸거나 내용이 바뀌었으면 GCM 태그 검증이 실패하고, 이때는 아무것도 저장하지 않는다.
+async function saveDecrypted(url, name) {
+  toast("복호화하는 중…");
+  let buffer;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    buffer = await res.arrayBuffer();
+  } catch {
+    throw new ApiError("NETWORK_ERROR");
+  }
+  let plain;
+  try {
+    plain = await decryptBuffer(buffer, key);
+  } catch {
+    toast("복호화에 실패했습니다. 링크의 키가 올바르지 않거나 파일이 변경되었습니다.");
+    return;
+  }
+  const href = URL.createObjectURL(plain);
+  save(href, name);
+  setTimeout(() => URL.revokeObjectURL(href), 10000);
 }
 
 function startCountdown(expiresAt) {

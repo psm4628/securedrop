@@ -303,7 +303,7 @@ const mockApi = {
   // → 처리본은 user_approved → 민감정보 남으면 acknowledge_risk (409) → 요청 해시 = 세션 해시 (409)
   async createTransfer(body) {
     await delay(300);
-    const { files, scan_id, sanitize_id, expires_in, acknowledge_risk, acknowledge_unsupported, user_approved } = body;
+    const { files, scan_id, sanitize_id, expires_in, acknowledge_risk, acknowledge_unsupported, user_approved, encrypted } = body;
     if (![300, 600, 3600].includes(expires_in)) {
       throw new ApiError("VALIDATION_ERROR", "만료 시간은 300, 600, 3600초 중 선택하세요.", 422);
     }
@@ -323,7 +323,8 @@ const mockApi = {
     if (s && !s.clean && !acknowledge_risk) {
       throw new ApiError("SENSITIVE_REMAINS", "민감정보 정제 또는 위험 확인이 필요합니다.", 409);
     }
-    if (s && s.sha256 !== f.sha256) {
+    // 암호화 전송은 암호문 해시를 보내므로 검사 세션의 평문 해시와 비교하지 않는다(서버와 동일)
+    if (s && !encrypted && s.sha256 !== f.sha256) {
       throw new ApiError("INTEGRITY_MISMATCH", "검사·정제 결과 해시가 일치하지 않습니다.", 409);
     }
 
@@ -336,6 +337,7 @@ const mockApi = {
       manage_hash: await sha256Hex(new Blob([token])),
       status: "PENDING_UPLOAD",
       files: [{ name: f.name, size: f.size, sha256: f.sha256, s3_key: key }],
+      encrypted: !!encrypted,
       expires_at: new Date(Date.now() + expires_in * 1000).toISOString(), // 생성 시점부터 계산
       upload_expires_at: Date.now() + 300e3,
       download_count: 0,
@@ -431,7 +433,7 @@ const mockApi = {
     mockSave(all);
     return {
       files: t.files.map((f) => ({ name: f.name, size: f.size, url: f.dataUrl || null })),
-      encrypted: false,
+      encrypted: !!t.encrypted,
       expires_at: t.expires_at,
     };
   },

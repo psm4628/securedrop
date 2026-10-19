@@ -26,6 +26,7 @@ export function showTransfer(transfer, { onNew }) {
   current = transfer;
   onNewHandler = onNew;
   $("qr-img").src = transfer.qr;
+  $("qr-e2ee-note").hidden = !transfer.encrypted;
   $("qr-img").classList.remove("is-dead");
   $("qr-status").textContent = "링크 활성 · 다운로드 0회";
   for (const id of ["btn-revoke", "btn-copy", "btn-refresh"]) $(id).disabled = false;

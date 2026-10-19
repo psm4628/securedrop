@@ -2,7 +2,8 @@
 // 세션 토큰은 sessionStorage에만 둔다(탭을 닫으면 사라짐, 서버 유효기간 8시간). 쿠키 미사용.
 // 모든 값은 textContent로만 그려 서버 응답이 HTML로 해석되지 않게 한다.
 (() => {
-  const API = String((window.SD_CONFIG && window.SD_CONFIG.apiBase) || "").replace(/\/+$/, "");
+  const config = window.SD_CONFIG || {};
+  const API = String(config.adminApiBase ?? config.apiBase ?? "").replace(/\/+$/, "");
   const CW_URL = (window.SD_CONFIG && window.SD_CONFIG.cloudwatchUrl) || "";
   const KEY = "sd_admin_session";
   const $ = (id) => document.getElementById(id);
@@ -11,7 +12,7 @@
     get() {
       try {
         const saved = JSON.parse(sessionStorage.getItem(KEY) || "null");
-        return saved && Date.parse(saved.expires_at) > Date.now() ? saved : null;
+        return saved && typeof saved.token === "string" && saved.token.length > 0 && Date.parse(saved.expires_at) > Date.now() ? saved : null;
       } catch {
         return null;
       }
@@ -28,14 +29,16 @@
   let session = store.get();
 
   async function api(path, { method = "GET", body, auth = true } = {}) {
+    const requestSession = auth ? session : null;
     const headers = {};
     if (body) headers["Content-Type"] = "application/json";
-    if (auth && session) headers.Authorization = "Bearer " + session.token;
-    const response = await fetch(API + path, { method, headers, body: body && JSON.stringify(body) });
+    if (requestSession) headers.Authorization = "Bearer " + requestSession.token;
+    const response = await fetch(API + path, { method, headers, body: body && JSON.stringify(body), cache: "no-store" });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const error = new Error(data?.error?.message || "요청에 실패했습니다.");
       error.status = response.status;
+      error.session = requestSession;
       throw error;
     }
     return data;
@@ -69,6 +72,8 @@
 
   function expired(error) {
     if (error.status !== 401) return false;
+    // 이전 요청의 지연된 401이 새로 로그인한 세션을 지우지 않게 한다.
+    if (error.session !== session) return true;
     store.set(null);
     show(false);
     $("login-msg").textContent = "세션이 만료되었습니다. 다시 로그인하세요.";
@@ -155,6 +160,7 @@
   }
 
   async function refresh() {
+    if (!session) return;
     try {
       await Promise.all([loadStats(), loadEvents(), loadTransfers()]);
     } catch (error) {
@@ -164,6 +170,9 @@
 
   $("login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const button = event.currentTarget.querySelector('button[type="submit"]');
+    if (button.disabled) return;
+    button.disabled = true;
     const message = $("login-msg");
     message.textContent = "";
     try {
@@ -180,6 +189,8 @@
       $("password").value = "";
       message.textContent =
         error.status === 423 ? "계정이 잠겼습니다. 15분 후 다시 시도하세요." : error.status === 429 ? "잠시 후 다시 시도하세요." : error.message;
+    } finally {
+      button.disabled = false;
     }
   });
 

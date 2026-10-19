@@ -17,3 +17,4 @@ __pycache__/
 *.key
 backend/dist/
 SecureDrop_Cloud_PRD_*.txt
+*.har

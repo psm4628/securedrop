@@ -65,6 +65,10 @@ Lambda는 Python 3.12 x86_64, `handler.handler`, 메모리 1024MB, 제한 시간
 
 오류는 `{"error":{"code":"...","message":"..."}}` 형식입니다. 검증 422, 세션 인증 401, 관리 토큰 403, 미존재·폐기 404, 만료 410, 크기 초과 413, 검사 미지원 415, 잠금 423, 업로드 미완료·해시 불일치·잔여 민감정보·상태 경합 409, 저장소 오류 502로 구분합니다. 원문·비밀번호·토큰·파일명·서명 URL·대화 원문을 이벤트 및 운영 로그에 남기지 않습니다. 모든 날짜 파티션과 집계 기준은 UTC입니다.
 
+배포된 관리자 콘솔은 `SD_CONFIG.adminApiBase: ""` 설정으로 웹과 같은 도메인의 `/api/admin/*`를 호출합니다. CloudFront는 이 경로를 API Gateway `/prod`로 전달하며, 캐시를 끄고 `Authorization`과 쿼리 매개변수를 전달합니다. 로컬에서는 기존 `apiBase`를 사용합니다. 실제 Chrome 검증은 `SD_ADMIN_USERNAME`·`SD_ADMIN_PASSWORD`를 환경 변수로 설정하거나 숨김 비밀번호 입력을 사용하여 `uv run --with playwright python infra/verify_admin_live.py`로 실행합니다.
+
+관리자 진단 로그는 API Gateway 요청 ID로 Lambda 진입(`admin_lambda_received`), ASGI 헤더 인식(`admin_asgi_received`), 인증·세션 단계(`admin_auth_trace`)와 응답을 연결합니다. 헤더 존재 여부와 처리 결과만 기록하며 토큰·비밀번호·요청 본문은 기록하지 않습니다. API Gateway 실행 로그는 INFO, `dataTraceEnabled=false`로 설정합니다.
+
 ## v1.2에서의 전환
 
 `backend/frontend/` 데모는 v1.3 API에 연결되어 검사·정제·승인·S3 직접 업로드·공유·폐기를 지원합니다. `extension/`은 별도 클라이언트 소스입니다. Lambda에서 정적 페이지를 제공하지 않습니다. 정적 파일은 S3 웹 버킷과 CloudFront로 배포하고, 프론트에서 API Gateway 주소를 직접 호출해야 합니다. 특히 다음 계약이 변경되었습니다.

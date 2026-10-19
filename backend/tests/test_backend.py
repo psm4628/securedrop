@@ -371,6 +371,35 @@ def test_scrypt_salts():
     assert verify_password("password", first) and not verify_password("wrong", first)
 
 
+def test_admin_auth_failure_logs_explain_reason_without_tokens(env, admin, caplog):
+    client, app, _ = env
+    raw_token = admin["Authorization"].split()[1]
+    cases = [
+        ({}, "credentials_missing_or_invalid", False),
+        ({"Authorization": "Basic private-value"}, "credentials_missing_or_invalid", True),
+        ({"Authorization": "Bearer private-value"}, "session_not_found", True),
+    ]
+    row = app.state.store.get("admin_sessions", {"token_hash": token_hash(raw_token)})
+    row["expires_at"] = (now() - timedelta(seconds=1)).isoformat()
+    app.state.store.put("admin_sessions", row)
+    cases.append((admin, "session_expired", True))
+    for headers, reason, present in cases:
+        caplog.clear()
+        assert client.get("/api/admin/stats", headers=headers).status_code == 401
+        failures = [
+            json.loads(record.message)
+            for record in caplog.records
+            if '"event": "admin_auth_failed"' in record.message
+        ]
+        assert len(failures) == 1
+        assert failures[0]["reason"] == reason
+        assert failures[0]["authorization_present"] is present
+        assert failures[0]["request_id"]
+        assert raw_token not in caplog.text
+        assert token_hash(raw_token) not in caplog.text
+        assert "private-value" not in caplog.text
+
+
 def test_admin_failures_and_lock(env, admin):
     client, app, _ = env
     unknown = client.post("/api/admin/login", json={"username": "absent", "password": "wrong"})

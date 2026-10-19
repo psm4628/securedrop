@@ -4,6 +4,7 @@
 window.SD_CONFIG = {
   // API Gateway 주소. 배포: https://<api-id>.execute-api.ap-northeast-2.amazonaws.com/prod
   apiBase: "http://localhost:8000",
+  // 배포 시 adminApiBase: ""로 관리자 API를 같은 웹 도메인에서 호출한다.
   // 관리자 콘솔의 CloudWatch 대시보드 링크 (선택, AWS 콘솔 로그인 필요)
   cloudwatchUrl: "",
 };

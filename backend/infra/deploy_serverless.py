@@ -16,6 +16,7 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import Settings
+from infra.admin_origin import configure_admin_origin
 from infra.cors import configure_gateway_responses, extension_origin, update_lambda_origins
 from infra.create_tables import create_tables
 from store import Store
@@ -413,6 +414,7 @@ def main():
             ("/*/*/throttling/rateLimit", "20"),
             ("/*/*/throttling/burstLimit", "40"),
             ("/*/*/logging/dataTrace", "false"),
+            ("/*/*/logging/loglevel", "INFO"),
             ("/*/*/metrics/enabled", "true"),
             (
                 "/accessLogSettings/destinationArn",
@@ -513,7 +515,9 @@ def deploy_frontend(s3, cf, account, files, web, distribution, api_base):
             if path.name != "config.js"
             else (
                 "window.SD_CONFIG = "
-                + json.dumps({"apiBase": api_base, "defaultApiMode": "real", "cloudwatchUrl": ""})
+                + json.dumps({
+                    "apiBase": api_base, "adminApiBase": "", "defaultApiMode": "real", "cloudwatchUrl": ""
+                })
                 + ";\n"
             ).encode()
         )
@@ -600,6 +604,7 @@ def deploy_frontend(s3, cf, account, files, web, distribution, api_base):
         "TrustedSigners": {"Enabled": False, "Quantity": 0},
     }
     dist["CacheBehaviors"] = {"Quantity": 0}
+    configure_admin_origin(dist, api_base)
     cf.update_distribution(Id=distribution, IfMatch=current["ETag"], DistributionConfig=dist)
     invalidation = cf.create_invalidation(
         DistributionId=distribution,

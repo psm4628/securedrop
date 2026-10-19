@@ -54,6 +54,11 @@
             <label for="expires">링크 만료 시간</label>
             <select id="expires"></select>
           </div>
+          <label id="encrypt-row" class="confirm">
+            <input type="checkbox" id="encrypt-check">
+            <span>브라우저에서 암호화해서 보내기 (AES-256-GCM)<br>
+              <small class="muted">S3에는 암호문만 저장됩니다. 키는 링크·QR의 <code>#k=</code> 뒤에만 들어 있어 서버로 전송되지 않으며, QR을 가진 사람은 파일을 열 수 있습니다. 민감정보 검사 단계에서는 서버가 평문을 봅니다.</small></span>
+          </label>
           <label id="confirm-row" class="confirm" hidden>
             <input type="checkbox" id="confirm-check">
             <span id="confirm-text"></span>
@@ -82,6 +87,7 @@
             <button id="btn-revoke" class="btn btn-danger" type="button">링크 폐기</button>
             <button id="btn-new" class="btn btn-ghost" type="button">새 파일 보내기</button>
           </div>
+          <p id="qr-e2ee-note" class="muted small" hidden>🔒 브라우저 암호화됨 — 링크 끝의 <code>#k=</code> 키가 있어야 열립니다. 링크를 복사할 때 키까지 함께 복사됩니다.</p>
           <p class="muted small">이 탭을 닫으면 링크를 직접 폐기할 수 없습니다. 링크는 만료 시간이 지나면 자동으로 막힙니다.</p>
         </div>
       </div>

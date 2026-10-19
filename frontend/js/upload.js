@@ -5,6 +5,8 @@ import { api, CONFIG, ApiError, typeLabel, extOf, mimeOf, sha256Hex } from "./ap
 import * as guard from "./assist.js";
 import { saveToken, removeToken } from "./manage.js";
 import { showTransfer, hideTransfer } from "./qr.js";
+import { generateKey, encryptBlob, withKey, OVERHEAD } from "./crypto.js";
+import { qrDataUrl } from "./qrcode.js";
 import { toast, fmtSize } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
@@ -266,13 +268,30 @@ export async function sendBlob({ blob, name, type, ref, expectedSha256, acknowle
       throw new ApiError("VALIDATION_ERROR", "검사 후 파일이 바뀌었습니다. 파일을 다시 선택하세요.");
     }
 
+    // 암호화: 검사·정제·승인은 평문으로 끝났다. 업로드할 바이트만 암호문으로 바꾼다.
+    // 서버에는 암호문의 크기·해시를 알리고(encrypted:true), 키는 어디에도 보내지 않는다.
+    const encrypt = $("encrypt-check").checked;
+    let payload = blob;
+    let payloadSha = sha256;
+    let keyText = null;
+    if (encrypt) {
+      if (blob.size + OVERHEAD > CONFIG.MAX_FILE_MB * MB) {
+        throw new ApiError("FILE_TOO_LARGE", `암호화하면 ${OVERHEAD}바이트가 늘어나 ${CONFIG.MAX_FILE_MB}MB를 넘습니다. 파일을 조금 줄여 주세요.`, 413);
+      }
+      setProgress("브라우저에서 암호화하는 중…", 0);
+      const { key, encoded } = await generateKey();
+      keyText = encoded;
+      payload = await encryptBlob(blob, key);
+      payloadSha = await sha256Hex(payload);
+    }
+
     stage = "create";
     setProgress("업로드 준비 중…", 0);
     created = await api.createTransfer({
-      files: [{ name, size: blob.size, type, sha256 }],
+      files: [{ name, size: payload.size, type, sha256: payloadSha }],
       ...ref,
       expires_in: Number($("expires").value),
-      encrypted: false,
+      encrypted: encrypt,
       acknowledge_risk: acknowledgeRisk,
       acknowledge_unsupported: acknowledgeUnsupported,
       user_approved: userApproved,
@@ -281,7 +300,7 @@ export async function sendBlob({ blob, name, type, ref, expectedSha256, acknowle
     saveToken(created.id, created.manage_token);
 
     stage = "upload";
-    await api.uploadToS3(created.uploads[0], blob, (r) => setProgress(`업로드 중… ${Math.round(r * 100)}%`, r));
+    await api.uploadToS3(created.uploads[0], payload, (r) => setProgress(`업로드 중… ${Math.round(r * 100)}%`, r));
 
     stage = "complete";
     setProgress("업로드 확인 중…", 1);
@@ -299,7 +318,13 @@ export async function sendBlob({ blob, name, type, ref, expectedSha256, acknowle
     setStep(5);
     $("send-card").hidden = true;
     guard.showSent(name);
-    showTransfer(done, { onNew: reset });
+    if (keyText) {
+      // 서버가 만든 QR에는 키가 없으므로, 키를 붙인 링크로 브라우저에서 QR을 다시 그린다.
+      const shareUrl = withKey(done.share_url, keyText);
+      showTransfer({ ...done, share_url: shareUrl, qr: qrDataUrl(shareUrl), encrypted: true }, { onNew: reset });
+    } else {
+      showTransfer(done, { onNew: reset });
+    }
   } catch (e) {
     const err = e instanceof ApiError ? e : new ApiError("INTERNAL_ERROR");
     setProgress(null);
